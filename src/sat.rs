@@ -1,10 +1,16 @@
 #![allow(unused)]
 
 use core::fmt;
-use std::{collections::{HashMap, HashSet}, fmt::Debug, hash::Hash, marker::PhantomData, ops::{Add, BitAnd, BitOr, Neg}};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    hash::Hash,
+    marker::PhantomData,
+    ops::{Add, BitAnd, BitOr, Neg},
+};
 
 pub mod prelude {
-    pub use super::{Lit::*, Clause, Encoder, Solver};
+    pub use super::{Clause, Encoder, Lit::*, Solver};
 }
 
 pub trait Encoder<V>: Sized {
@@ -19,14 +25,17 @@ pub trait Encoder<V>: Sized {
     }
 }
 
-pub trait Constraint<V> {
+pub trait Constraint<V>: Debug {
     fn encode<E: Encoder<V>>(self, solver: &mut E);
 }
 
+#[derive(Clone)]
 pub struct Clause<I>(pub I);
 
-impl<V: SatVar, I> Constraint<V> for Clause<I> 
-where I: Iterator<Item = Lit<V>>
+impl<V: SatVar, I: Clone> Constraint<V> for Clause<I>
+where
+    V: Debug + Clone,
+    I: Iterator<Item = Lit<V>> + Clone,
 {
     fn encode<E: Encoder<V>>(self, solver: &mut E) {
         let clause: Vec<_> = self.0.map(|lit| solver.varmap().add_var(lit)).collect();
@@ -34,7 +43,17 @@ where I: Iterator<Item = Lit<V>>
     }
 }
 
-#[derive(Debug)]
+impl<I, V> Debug for Clause<I>
+where
+    V: Debug,
+    I: Iterator<Item = Lit<V>> + Clone,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.0.clone()).finish()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Expr<V> {
     And(Box<Expr<V>>, Box<Expr<V>>),
     Or(Box<Expr<V>>, Box<Expr<V>>),
@@ -74,9 +93,7 @@ impl<V: SatVar> Expr<V> {
                 solver.add_clause([e, new_var].iter().copied());
                 new_var
             }
-            Expr::Lit(e) => {
-                solver.varmap().add_var(e)
-            }
+            Expr::Lit(e) => solver.varmap().add_var(e),
         }
     }
 }
@@ -113,8 +130,7 @@ impl<V> Neg for Expr<V> {
     }
 }
 
-
-impl<V: SatVar> Constraint<V> for Expr<V> {
+impl<V: Debug + SatVar> Constraint<V> for Expr<V> {
     fn encode<E: Encoder<V>>(self, solver: &mut E) {
         let v = self.encode_tree(solver);
         solver.add_clause([v].iter().copied());
@@ -127,9 +143,10 @@ pub struct AtMostK<I> {
     pub k: u32,
 }
 
-impl<V: SatVar, I> Constraint<V> for AtMostK<I>
+impl<V, I> Constraint<V> for AtMostK<I>
 where
-    I: Iterator<Item = Lit<V>>,
+    V: SatVar + Clone + Debug,
+    I: Iterator<Item = Lit<V>> + Clone,
 {
     fn encode<E: Encoder<V>>(self, solver: &mut E) {
         let vars: Vec<_> = self.vars.map(|v| solver.varmap().add_var(v)).collect();
@@ -170,20 +187,35 @@ where
     }
 }
 
+impl<V: Debug, I> Debug for AtMostK<I>
+where
+    I: Iterator<Item = Lit<V>> + Clone,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let lits: Vec<_> = self.vars.clone().collect();
+
+        f.debug_struct("AtMostK")
+            .field("k", &self.k)
+            .field("vars", &lits)
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 pub struct AtleastK<I> {
     pub vars: I,
     pub k: u32,
 }
 
-impl<V: SatVar, I> Constraint<V> for AtleastK<I>
+impl<V, I> Constraint<V> for AtleastK<I>
 where
-    I: Iterator<Item = Lit<V>>,
+    V: SatVar + Debug + Clone,
+    I: Iterator<Item = Lit<V>> + Clone,
 {
     fn encode<E: Encoder<V>>(self, solver: &mut E) {
         let k = self.k as usize;
 
-        let vars: Vec<_> = self.vars.map(|v| solver.varmap().add_var(v)).collect();;
+        let vars: Vec<_> = self.vars.map(|v| solver.varmap().add_var(v)).collect();
 
         if k == 1 {
             solver.add_clause(vars.into_iter());
@@ -221,6 +253,20 @@ where
     }
 }
 
+impl<V: Debug, I> Debug for AtleastK<I>
+where
+    I: Iterator<Item = Lit<V>> + Clone,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let lits: Vec<_> = self.vars.clone().collect();
+
+        f.debug_struct("AtleastK")
+            .field("k", &self.k)
+            .field("vars", &lits)
+            .finish()
+    }
+}
+
 pub struct IfThen<I1, C> {
     pub cond: I1,
     pub then: C,
@@ -234,8 +280,10 @@ struct IfThenEncoderWrapper<'a, E> {
 impl<'a, V, E: Encoder<V>> Encoder<V> for IfThenEncoderWrapper<'a, E> {
     fn add_clause<I>(&mut self, lits: I)
     where
-        I: Iterator<Item = i32> {
-        self.internal.add_clause(lits.chain(self.prefix.iter().copied()));
+        I: Iterator<Item = i32>,
+    {
+        self.internal
+            .add_clause(lits.chain(self.prefix.iter().copied()));
     }
 
     fn varmap(&mut self) -> &mut VarMap<V> {
@@ -243,9 +291,11 @@ impl<'a, V, E: Encoder<V>> Encoder<V> for IfThenEncoderWrapper<'a, E> {
     }
 }
 
-impl<V: SatVar, C, I1> Constraint<V> for IfThen<I1, C>
-where C: Constraint<V>,
-      I1: Iterator<Item=Lit<V>>,
+impl<V, C, I1> Constraint<V> for IfThen<I1, C>
+where
+    V: Debug + Clone + SatVar,
+    C: Constraint<V>,
+    I1: Iterator<Item = Lit<V>> + Clone,
 {
     fn encode<E: Encoder<V>>(self, solver: &mut E) {
         let prefix = self.cond.map(|lit| solver.varmap().add_var(-lit)).collect();
@@ -259,6 +309,20 @@ where C: Constraint<V>,
     }
 }
 
+impl<V: Debug, I, C> Debug for IfThen<I, C>
+where
+    I: Iterator<Item = Lit<V>> + Clone,
+    C: Constraint<V>,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let lits: Vec<_> = self.cond.clone().collect();
+
+        f.debug_tuple("IfThen")
+            .field(&lits)
+            .field(&self.then)
+            .finish()
+    }
+}
 pub trait SatVar: Hash + Eq + Clone {}
 
 impl<V: Hash + Eq + Clone> SatVar for V {}
@@ -279,7 +343,7 @@ impl<V> Default for VarMap<V> {
     }
 }
 
-impl<V: fmt::Debug> fmt::Debug for VarMap<V> {
+impl<V: Debug> Debug for VarMap<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut map: Vec<_> = self.forward.iter().collect();
         map.sort_by_key(|&(_, &i)| i);
@@ -288,9 +352,7 @@ impl<V: fmt::Debug> fmt::Debug for VarMap<V> {
     }
 }
 
-impl<V: SatVar> VarMap<V>
-where
-{
+impl<V: SatVar> VarMap<V> {
     fn add_var(&mut self, var: Lit<V>) -> i32 {
         let (var, pol) = match var {
             Lit::Pos(v) => (v, 1),
@@ -375,8 +437,7 @@ impl<V> Neg for Lit<V> {
     }
 }
 
-impl<V: SatVar> Solver<V>
-{
+impl<V: SatVar> Solver<V> {
     pub fn new() -> Self {
         Self {
             internal: cadical::Solver::new(),
@@ -424,46 +485,30 @@ impl<V> Encoder<V> for Solver<V> {
 }
 
 #[derive(Debug)]
-pub struct DebugSolver<V>(PhantomData<V>);
+pub struct DebugSolver<V>(VarMap<V>);
 
-impl<V: Debug> DebugSolver<V> {
-    #[allow(unused)]
+impl<V> DebugSolver<V> {
     pub fn new() -> Self {
-        Self(PhantomData)
+        Self(Default::default())
     }
 
-    #[allow(unused)]
     pub fn solve(&mut self) -> Option<HashSet<Lit<V>>> {
-        panic!("Cannot solve a debug a solver")
+        panic!("Cannot solve a DebugSolver");
+    }
+}
+
+impl<V> Encoder<V> for DebugSolver<V> {
+    fn add_clause<I>(&mut self, lits: I)
+    where
+        I: Iterator<Item = i32>,
+    {
     }
 
-    #[allow(unused)]
-    pub fn add_clause<I>(&mut self, clause: I)
-    where
-        I: IntoIterator<Item = Lit<V>>,
-    {
-        let clause: Vec<_> = clause.into_iter().collect();
-
-        println!("Clause: {:?}", clause);
+    fn varmap(&mut self) -> &mut VarMap<V> {
+        &mut self.0
     }
 
-    #[allow(unused)]
-    pub fn at_most_k<I>(&mut self, vars: I, k: u32)
-    where
-        I: IntoIterator<Item = Lit<V>>,
-    {
-        let vars: Vec<_> = vars.into_iter().collect();
-
-        println!("AtMost {}: {:?}", k, vars);
-    }
-
-    #[allow(unused)]
-    pub fn atleast_k<I>(&mut self, vars: I, k: u32)
-    where
-        I: IntoIterator<Item = Lit<V>>,
-    {
-        let vars: Vec<_> = vars.into_iter().collect();
-
-        println!("AtLeast {}: {:?}", k, vars);
+    fn add_constraint<C: Constraint<V>>(&mut self, constraint: C) {
+        println!("{:?}", constraint);
     }
 }

@@ -79,6 +79,7 @@ fn encode_general_rules(solver: &mut Solver<Var>) {
 
 fn main() {
     let mut solver = Solver::new();
+    //let mut solver = sat::DebugSolver::new();
     //encode_general_rules(&mut solver);
 
     let vars = (1..10).map(|v| Pos(v));
@@ -88,6 +89,6 @@ fn main() {
 
     while let Some(model) = solver.solve() {
         println!("{:?}", model);
-        solver.add_constraint(Clause(model.into_iter().map(|v| -v)));
+        solver.add_constraint(Clause(model.iter().copied().map(|v| -v)));
     }
 }
