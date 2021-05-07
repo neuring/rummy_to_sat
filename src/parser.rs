@@ -37,12 +37,15 @@ fn parse_number(input: &str) -> IResult<usize> {
 }
 
 fn parse_card(input: &str) -> IResult<Card> {
-    parse_color
-        .terminated(space1)
-        .and(parse_number)
-        .map(|(color, number)| Card { color, number })
-        .context("parse card")
-        .parse(input)
+    alt((
+        tag("joker").value(Card::Joker),
+        parse_color
+            .terminated(space1)
+            .and(parse_number)
+            .map(|(color, number)| Card::Normal { color, number }),
+    ))
+    .context("parse card")
+    .parse(input)
 }
 
 fn parse_multiplier(input: &str) -> IResult<usize> {

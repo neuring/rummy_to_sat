@@ -275,11 +275,11 @@ name = "rummy_to_sat"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "cadical",
  "derive_more",
  "itertools",
  "nom",
  "nom-supreme",
+ "sat_encoder",
  "structopt",
  "strum",
 ]
@@ -289,6 +289,13 @@ name = "ryu"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71d301d4193d031abdd79ff7e3dd721168a9572ef3fe51a1517aba235bd8f86e"
+
+[[package]]
+name = "sat_encoder"
+version = "0.1.0"
+dependencies = [
+ "cadical",
+]
 
 [[package]]
 name = "static_assertions"
