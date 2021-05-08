@@ -362,107 +362,76 @@ fn pretty_print_config(config: &Config) {
 }
 
 fn pretty_print_solution(model: &Model<Var>) {
-    // number blocks
-    for (color, instance) in iproduct!(Color::iter(), 0..=1) {
-        let iter = (1..=13)
-            .flat_map(|index| {
-                [false, true].iter().map(move |&joker| {
-                    Pos(Var::Num(NumberBlock {
-                        color,
-                        instance,
-                        is_joker: joker,
-                        index,
-                    }))
+    let mut num_blocks = Vec::new();
+
+    for color in Color::iter() {
+        for instance in 0..=1 {
+            let block: Vec<_> = iproduct!(1..=13, vec![true, false].into_iter())
+                .filter(|&(index, is_joker)| {
+                    model
+                        .var(Var::Num(NumberBlock {
+                            index,
+                            color,
+                            is_joker,
+                            instance,
+                        }))
+                        .unwrap()
                 })
-            })
-            .map(|lit| (lit, model.lit(lit).unwrap_or(false)));
+                .collect();
 
-        if iter.clone().all(|(_, b)| !b) {
-            continue;
-        }
-
-        for (card, b) in iter {
-            let card: Var = card.unwrap();
-            let card = match card {
-                Var::Num(num) => num,
-                Var::Color(_) => {
-                    unreachable!()
-                }
-                Var::Chosen(..) => continue,
-            };
-
-            if b {
-                if card.is_joker {
-                    print!(
-                        "{} X{}",
-                        card.color.ascii_color_code(),
-                        Color::END_COLOR
-                    );
-                } else {
-                    print!(
-                        "{}{:>2}{}",
-                        card.color.ascii_color_code(),
-                        card.index,
-                        Color::END_COLOR
-                    );
-                }
-            } else {
-                print!("  ");
+            if !block.is_empty() {
+                num_blocks.push((color, block));
             }
         }
-        println!()
     }
 
-    // color blocks
-    for (number, instance) in iproduct!(1..=13, 0..=1) {
-        let iter = Color::iter()
-            .flat_map(|color| {
-                [false, true].iter().map(move |&joker| {
-                    Pos(Var::Color(ColorBlock {
-                        color,
-                        instance,
-                        is_joker: joker,
-                        number,
-                    }))
-                })
+    for (color, block) in num_blocks {
+        let s = block
+            .into_iter()
+            .map(|(idx, joker)| {
+                if joker {
+                    return "X".into();
+                }
+                idx.to_string()
             })
-            .map(|lit| (lit, model.lit(lit).unwrap()));
+            .join(" ");
+        println!("{}{}{}", color.ascii_color_code(), s, Color::END_COLOR);
+    }
 
-        if iter.clone().all(|(_, b)| !b) {
-            continue;
-        }
+    let mut color_blocks = Vec::new();
 
-        for (card, b) in iter {
-            let card: Var = card.unwrap();
-
-            let card = match card {
-                Var::Num(_) => {
-                    unreachable!()
-                }
-                Var::Color(color) => color,
-                Var::Chosen(..) => continue,
-            };
-
-            if b {
-                if card.is_joker {
-                    print!(
-                        "{} X{}",
-                        card.color.ascii_color_code(),
-                        Color::END_COLOR
-                    );
-                } else {
-                    print!(
-                        "{}{:>2}{}",
-                        card.color.ascii_color_code(),
-                        card.number,
-                        Color::END_COLOR
-                    );
-                }
-            } else {
-                print!("  ");
+    for number in 1..=13 {
+        for instance in 0..=1 {
+            let block: Vec<_> =
+                iproduct!(Color::iter(), vec![true, false].into_iter())
+                    .filter(|&(color, is_joker)| {
+                        model
+                            .var(Var::Color(ColorBlock {
+                                number,
+                                color,
+                                is_joker,
+                                instance,
+                            }))
+                            .unwrap()
+                    })
+                    .collect();
+            if !block.is_empty() {
+                color_blocks.push((number, block));
             }
         }
-        println!()
+    }
+
+    for (num, block) in color_blocks {
+        let s = block
+            .into_iter()
+            .map(|(color, joker)| {
+                if joker {
+                    return "X".into();
+                }
+                format!("{}{}{}", color.ascii_color_code(), num, Color::END_COLOR)
+            })
+            .join(" ");
+        println!("{}", s);
     }
 }
 
@@ -571,6 +540,7 @@ fn main() -> anyhow::Result<()> {
     let config = parser::parse_config(&config)
         .context("Parsing input failed.")?;
 
+    println!("Available:");
     pretty_print_config(&config);
 
     let print_models = |models: Vec<Model<Var>>| {
@@ -580,29 +550,33 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
-    if config.cards.contains_key(&Card::Joker) {
-        let models = collect_solutions(&config, false);
-        if !models.is_empty() {
-            println!("Solution without joker:");
-            print_models(models);
-        } else {
-            println!("Impossible to solve without joker")
-        }
+    match config.cards.get(&Card::Joker) {
+        Some(&count) if count > 0  => {
 
-        let models = collect_solutions(&config, true);
-        if !models.is_empty() {
-            println!("Solution with joker:");
-            print_models(models);
-        } else {
-            println!("Impossible to solve with joker")
-        }
-    } else {
-        let models = collect_solutions(&config, false);
-        if !models.is_empty() {
-            println!("Solution");
-            print_models(models);
-        } else {
-            println!("No Solution exists!")
+            let models = collect_solutions(&config, false);
+            if !models.is_empty() {
+                println!("Solution without joker:");
+                print_models(models);
+            } else {
+                println!("Impossible to solve without joker")
+            }
+
+            let models = collect_solutions(&config, true);
+            if !models.is_empty() {
+                println!("Solution with joker:");
+                print_models(models);
+            } else {
+                println!("Impossible to solve with joker")
+            }
+        },
+        _ => {
+            let models = collect_solutions(&config, false);
+            if !models.is_empty() {
+                println!("Solution");
+                print_models(models);
+            } else {
+                println!("No Solution exists!")
+            }
         }
     }
 
