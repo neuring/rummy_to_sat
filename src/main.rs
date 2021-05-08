@@ -9,14 +9,18 @@ use std::{
 use anyhow::Context;
 use itertools::{iproduct, Itertools};
 use sat_encoder::{
-    constraints::{And, AtMostK, AtleastK, ExactlyK, Expr, If, Not, Or, SameCardinality},
+    constraints::{
+        And, AtMostK, AtleastK, ExactlyK, Expr, If, Not, Or, SameCardinality,
+    },
     prelude::*,
     Model,
 };
 use structopt::StructOpt;
 use strum::IntoEnumIterator;
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, strum::EnumIter, PartialOrd, Ord)]
+#[derive(
+    Debug, PartialEq, Eq, Hash, Clone, Copy, strum::EnumIter, PartialOrd, Ord,
+)]
 enum Color {
     Green,
     Red,
@@ -70,14 +74,20 @@ enum Card {
     Joker,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy, derive_more::From, PartialOrd, Ord)]
+#[derive(
+    Debug, PartialEq, Eq, Hash, Clone, Copy, derive_more::From, PartialOrd, Ord,
+)]
 enum Var {
     Chosen(Card, u32),
     Num(NumberBlock),
     Color(ColorBlock),
 }
 
-fn encode_number_block_rules(encoder: &mut DefaultEncoder<Var>, color: Color, instance: u32) {
+fn encode_number_block_rules(
+    encoder: &mut DefaultEncoder<Var>,
+    color: Color,
+    instance: u32,
+) {
     // Stores reprs of if a certain space is occupied (either by number card or joker)
     let mut reprs = Vec::new();
 
@@ -146,7 +156,11 @@ fn encode_number_block_rules(encoder: &mut DefaultEncoder<Var>, color: Color, in
     }
 }
 
-fn encode_color_block_rules(encoder: &mut DefaultEncoder<Var>, number: usize, instance: u32) {
+fn encode_color_block_rules(
+    encoder: &mut DefaultEncoder<Var>,
+    number: usize,
+    instance: u32,
+) {
     let mut reprs = Vec::new();
 
     for color in Color::iter() {
@@ -174,7 +188,9 @@ fn encode_color_block_rules(encoder: &mut DefaultEncoder<Var>, number: usize, in
         k: 3,
         lits: reprs.clone().into_iter(),
     };
-    encoder.add_constraint(Expr::from_constraint(empty_cond) | Expr::from_constraint(filled_cond));
+    encoder.add_constraint(
+        Expr::from_constraint(empty_cond) | Expr::from_constraint(filled_cond),
+    );
 }
 
 fn encode_general_rules(solver: &mut DefaultEncoder<Var>) {
@@ -211,8 +227,8 @@ fn encode_config(encoder: &mut DefaultEncoder<Var>, config: &Config, atleast: u3
 
         match config.cards.get(&Card::Normal { color, number }) {
             Some(&count) if count > 0 => {
-                let choosable =
-                    (0..count).map(|i| Pos(Var::Chosen(Card::Normal { color, number }, i)));
+                let choosable = (0..count)
+                    .map(|i| Pos(Var::Chosen(Card::Normal { color, number }, i)));
 
                 all_choosable.extend(choosable.clone());
 
@@ -241,16 +257,16 @@ fn encode_config(encoder: &mut DefaultEncoder<Var>, config: &Config, atleast: u3
                 color,
             }))
         })
-        .chain(
-            iproduct!(Color::iter(), 1..=13, 0..=1).map(|(color, index, instance)| {
+        .chain(iproduct!(Color::iter(), 1..=13, 0..=1).map(
+            |(color, index, instance)| {
                 Pos(Var::Num(NumberBlock {
                     index,
                     instance,
                     is_joker: true,
                     color,
                 }))
-            }),
-        );
+            },
+        ));
 
     match config.cards.get(&Card::Joker) {
         Some(&count) if count > 0 => {
@@ -371,7 +387,11 @@ fn pretty_print_solution(model: &Model<Var>) {
 
             if b {
                 if card.is_joker {
-                    print!("{} X{}", card.color.ascii_color_code(), Color::END_COLOR);
+                    print!(
+                        "{} X{}",
+                        card.color.ascii_color_code(),
+                        Color::END_COLOR
+                    );
                 } else {
                     print!(
                         "{}{:>2}{}",
@@ -419,7 +439,11 @@ fn pretty_print_solution(model: &Model<Var>) {
 
             if b {
                 if card.is_joker {
-                    print!("{} X{}", card.color.ascii_color_code(), Color::END_COLOR);
+                    print!(
+                        "{} X{}",
+                        card.color.ascii_color_code(),
+                        Color::END_COLOR
+                    );
                 } else {
                     print!(
                         "{}{:>2}{}",
@@ -443,7 +467,10 @@ fn count_cards_in_solution(model: &Model<Var>) -> usize {
         .count()
 }
 
-fn try_solve(config: &Config, atleast: u32) -> Option<(Model<Var>, DefaultEncoder<Var>)> {
+fn try_solve(
+    config: &Config,
+    atleast: u32,
+) -> Option<(Model<Var>, DefaultEncoder<Var>)> {
     let mut encoder = DefaultEncoder::new();
 
     encode_general_rules(&mut encoder);
@@ -471,6 +498,7 @@ fn main() -> anyhow::Result<()> {
 
     let total = config.total();
 
+    let mut min_encoded = 0;
     let mut min = 0;
     let mut max = total + 1;
 
@@ -490,6 +518,7 @@ fn main() -> anyhow::Result<()> {
 
             println!("Possible solution! ({})", cards);
 
+            min_encoded = val;
             min = cards;
             if val > best {
                 best = cards;
@@ -501,11 +530,16 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-
     if let Some((mut model, mut encoder)) = best_model {
         pretty_print_solution(&model);
 
-        encoder.solver.write_dimacs(&PathBuf::from("clauses.dimacs")).unwrap();
+        // Required so that the search for alternative solutions has the same number 
+        // of cards.
+        if min_encoded < min {
+            let lits = model.vars().filter(|v| matches!(v.var(), Var::Chosen(..)))
+                .map(|v| Pos(*v.var()));
+            encoder.add_constraint(AtleastK { k: min, lits: lits.into_iter()});
+        }
 
         loop {
             encoder.add_constraint(Or(model.vars().filter(|v| matches!(v.var(), Var::Chosen(..))).map(|v| !v)));
@@ -518,7 +552,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
     } else {
-        println!("No solution found!");
+       println!("No solution found!");
     }
 
     Ok(())
