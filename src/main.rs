@@ -203,7 +203,12 @@ fn encode_general_rules(solver: &mut DefaultEncoder<Var>) {
     }
 }
 
-fn encode_config(encoder: &mut DefaultEncoder<Var>, config: &Config, atleast: u32) {
+fn encode_config(
+    encoder: &mut DefaultEncoder<Var>,
+    config: &Config,
+    atleast: u32,
+    with_joker: bool,
+) {
     let mut all_choosable = Vec::new();
 
     for (color, number) in iproduct!(Color::iter(), 1..=13) {
@@ -269,7 +274,7 @@ fn encode_config(encoder: &mut DefaultEncoder<Var>, config: &Config, atleast: u3
         ));
 
     match config.cards.get(&Card::Joker) {
-        Some(&count) if count > 0 => {
+        Some(&count) if with_joker && count > 0 => {
             let choosable = (0..count).map(|i| Pos(Var::Chosen(Card::Joker, i)));
 
             all_choosable.extend(choosable.clone());
@@ -292,6 +297,7 @@ fn encode_config(encoder: &mut DefaultEncoder<Var>, config: &Config, atleast: u3
         }
     }
 
+    // Ensure that smaller cards are chosen first so that returned solutions are unique.
     for c in &all_choosable {
         match c.var() {
             Var::Chosen(card, i) if *i > 0 => encoder.add_constraint(If {
@@ -470,14 +476,85 @@ fn count_cards_in_solution(model: &Model<Var>) -> usize {
 fn try_solve(
     config: &Config,
     atleast: u32,
+    with_joker: bool,
 ) -> Option<(Model<Var>, DefaultEncoder<Var>)> {
     let mut encoder = DefaultEncoder::new();
 
     encode_general_rules(&mut encoder);
-    encode_config(&mut encoder, config, atleast);
+    encode_config(&mut encoder, config, atleast, with_joker);
 
     let model = encoder.solve();
     model.map(|m| (m, encoder))
+}
+
+fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
+    let total = config.total();
+
+    let mut min_encoded = 0;
+    let mut min = 0;
+    let mut max = total + 1;
+
+    let mut best_model = None;
+    let mut best = 0;
+
+    loop {
+        let val = (min + max) / 2;
+
+        if val == min || val == max {
+            break;
+        }
+
+        //println!("Try atleast {}", val);
+        if let Some(model) = try_solve(&config, val, with_joker) {
+            let cards = count_cards_in_solution(&model.0) as u32;
+
+            //println!("Possible solution! ({})", cards);
+
+            min_encoded = val;
+            min = cards;
+            if val > best {
+                best = cards;
+                best_model = Some(model);
+            }
+        } else {
+            //println!("Impossible!");
+            max = val;
+        }
+    }
+
+    let mut models = Vec::new();
+
+    if let Some((mut model, mut encoder)) = best_model {
+        models.push(model.clone());
+
+        // Required so that the search for alternative solutions has the same number
+        // of cards.
+        if min_encoded < min {
+            let lits = model
+                .vars()
+                .filter(|v| matches!(v.var(), Var::Chosen(..)))
+                .map(|v| Pos(*v.var()));
+            encoder.add_constraint(AtleastK {
+                k: min,
+                lits: lits.into_iter(),
+            });
+        }
+
+        loop {
+            encoder.add_constraint(Or(model
+                .vars()
+                .filter(|v| matches!(v.var(), Var::Chosen(..)))
+                .map(|v| !v)));
+            if let Some(new_model) = encoder.solve() {
+                models.push(new_model.clone());
+                model = new_model;
+            } else {
+                break;
+            }
+        }
+    }
+
+    models
 }
 
 #[derive(structopt::StructOpt)]
@@ -496,63 +573,37 @@ fn main() -> anyhow::Result<()> {
 
     pretty_print_config(&config);
 
-    let total = config.total();
-
-    let mut min_encoded = 0;
-    let mut min = 0;
-    let mut max = total + 1;
-
-    let mut best_model = None;
-    let mut best = 0;
-
-    loop {
-        let val = (min + max) / 2;
-
-        if val == min || val == max {
-            break;
+    let print_models = |models: Vec<Model<Var>>| {
+        for (i, sol) in models.into_iter().enumerate() {
+            println!("{}.", i);
+            pretty_print_solution(&sol);
         }
+    };
 
-        println!("Try atleast {}", val);
-        if let Some(model) = try_solve(&config, val) {
-            let cards = count_cards_in_solution(&model.0) as u32;
-
-            println!("Possible solution! ({})", cards);
-
-            min_encoded = val;
-            min = cards;
-            if val > best {
-                best = cards;
-                best_model = Some(model);
-            }
+    if config.cards.contains_key(&Card::Joker) {
+        let models = collect_solutions(&config, false);
+        if !models.is_empty() {
+            println!("Solution without joker:");
+            print_models(models);
         } else {
-            println!("Impossible!");
-            max = val;
-        }
-    }
-
-    if let Some((mut model, mut encoder)) = best_model {
-        pretty_print_solution(&model);
-
-        // Required so that the search for alternative solutions has the same number 
-        // of cards.
-        if min_encoded < min {
-            let lits = model.vars().filter(|v| matches!(v.var(), Var::Chosen(..)))
-                .map(|v| Pos(*v.var()));
-            encoder.add_constraint(AtleastK { k: min, lits: lits.into_iter()});
+            println!("Impossible to solve without joker")
         }
 
-        loop {
-            encoder.add_constraint(Or(model.vars().filter(|v| matches!(v.var(), Var::Chosen(..))).map(|v| !v)));
-            if let Some(new_model) = encoder.solve() {
-                println!("Alternative Model:");
-                pretty_print_solution(&new_model);
-                model = new_model;
-            } else {
-                break;
-            }
+        let models = collect_solutions(&config, true);
+        if !models.is_empty() {
+            println!("Solution with joker:");
+            print_models(models);
+        } else {
+            println!("Impossible to solve with joker")
         }
     } else {
-       println!("No solution found!");
+        let models = collect_solutions(&config, false);
+        if !models.is_empty() {
+            println!("Solution");
+            print_models(models);
+        } else {
+            println!("No Solution exists!")
+        }
     }
 
     Ok(())
