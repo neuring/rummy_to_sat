@@ -4,7 +4,7 @@ use std::{collections::HashMap, iter, path::PathBuf};
 
 use anyhow::Context;
 use colored::Colorize;
-use itertools::{iproduct, Itertools};
+use itertools::{Either, Itertools, iproduct};
 use sat_encoder::{
     constraints::{
         And, AtMostK, AtleastK, ExactlyK, Expr, If, Not, Or, SameCardinality,
@@ -299,12 +299,18 @@ fn encode_config(
         ));
 
     match config.cards.get(&Card::Joker) {
-        Some(&count) if with_joker && count.total() > 0 => {
-            let choosable = (0..count.required)
-                .map(|i| Pos(Var::Required(Card::Joker, i)))
-                .chain(
-                    (0..count.optional).map(|i| Pos(Var::Optional(Card::Joker, i))),
-                );
+        Some(&count) if count.required > 0 => {
+            let choosable_required =
+                (0..count.required).map(|i| Pos(Var::Required(Card::Joker, i)));
+
+            let choosable_optional =
+                (0..count.optional).map(|i| Pos(Var::Optional(Card::Joker, i)));
+
+            let choosable = if with_joker && count.optional > 0 {
+                Either::Left(choosable_required.chain(choosable_optional))
+            } else {
+                Either::Right(choosable_required)
+            };
 
             encoder.add_constraint({
                 let mut same_cardinality_constraint = SameCardinality::new();
@@ -450,7 +456,7 @@ fn pretty_print_solution(model: &Model<Var>) {
         if let Some(i) = required_cards.get_mut(&card) {
             if *i > 0 {
                 *i -= 1;
-                return true
+                return true;
             }
         }
         false
@@ -491,7 +497,7 @@ fn pretty_print_solution(model: &Model<Var>) {
                     };
                 }
 
-                if required_cards_left(Card::Normal { color, number: idx}) {
+                if required_cards_left(Card::Normal { color, number: idx }) {
                     return idx.to_string().color(color.to_color());
                 }
 
@@ -662,7 +668,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     match config.cards.get(&Card::Joker) {
-        Some(&count) if count.total() > 0  => {
+        Some(&count) if count.optional > 0  => {
 
             let models = collect_solutions(&config, false);
             if !models.is_empty() {
