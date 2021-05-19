@@ -2,19 +2,14 @@ mod parser;
 
 use std::{
     collections::HashMap,
-    iter::{once, repeat},
     path::PathBuf,
 };
 
 use anyhow::Context;
 use itertools::{iproduct, Itertools};
-use sat_encoder::{
-    constraints::{
+use sat_encoder::{Encoder, Model, Solver, constraints::{
         And, AtMostK, AtleastK, ExactlyK, Expr, If, Not, Or, SameCardinality,
-    },
-    prelude::*,
-    Model,
-};
+    }, prelude::*};
 use structopt::StructOpt;
 use strum::IntoEnumIterator;
 
@@ -78,13 +73,19 @@ enum Card {
     Debug, PartialEq, Eq, Hash, Clone, Copy, derive_more::From, PartialOrd, Ord,
 )]
 enum Var {
-    Chosen(Card, u32),
+    #[from(ignore)]
+    Required(Card, u32),
+
+    #[from(ignore)]
+    Optional(Card, u32),
+
     Num(NumberBlock),
+
     Color(ColorBlock),
 }
 
 fn encode_number_block_rules(
-    encoder: &mut DefaultEncoder<Var>,
+    encoder: &mut Encoder<Var, impl Solver>,
     color: Color,
     instance: u32,
 ) {
@@ -157,7 +158,7 @@ fn encode_number_block_rules(
 }
 
 fn encode_color_block_rules(
-    encoder: &mut DefaultEncoder<Var>,
+    encoder: &mut Encoder<Var, impl Solver>,
     number: usize,
     instance: u32,
 ) {
@@ -193,7 +194,7 @@ fn encode_color_block_rules(
     );
 }
 
-fn encode_general_rules(solver: &mut DefaultEncoder<Var>) {
+fn encode_general_rules(solver: &mut Encoder<Var, impl Solver>) {
     for (color, instance) in iproduct!(Color::iter(), 0..=1) {
         encode_number_block_rules(solver, color, instance);
     }
@@ -204,13 +205,11 @@ fn encode_general_rules(solver: &mut DefaultEncoder<Var>) {
 }
 
 fn encode_config(
-    encoder: &mut DefaultEncoder<Var>,
+    encoder: &mut Encoder<Var, impl Solver>,
     config: &Config,
-    atleast: u32,
+    atleast: u32, // how many optional cards should be used atleast.
     with_joker: bool,
 ) {
-    let mut all_choosable = Vec::new();
-
     for (color, number) in iproduct!(Color::iter(), 1..=13) {
         let lits = (0..=1)
             .map(|instance| {
@@ -231,11 +230,12 @@ fn encode_config(
             }));
 
         match config.cards.get(&Card::Normal { color, number }) {
-            Some(&count) if count > 0 => {
-                let choosable = (0..count)
-                    .map(|i| Pos(Var::Chosen(Card::Normal { color, number }, i)));
-
-                all_choosable.extend(choosable.clone());
+            Some(&count) if count.total() > 0 => {
+                let choosable = (0..count.required)
+                    .map(|i| Pos(Var::Required(Card::Normal { color, number }, i)))
+                    .chain((0..count.optional).map(|i| {
+                        Pos(Var::Optional(Card::Normal { color, number }, i))
+                    }));
 
                 encoder.add_constraint({
                     let mut same_cardinality_constraint = SameCardinality::new();
@@ -274,10 +274,12 @@ fn encode_config(
         ));
 
     match config.cards.get(&Card::Joker) {
-        Some(&count) if with_joker && count > 0 => {
-            let choosable = (0..count).map(|i| Pos(Var::Chosen(Card::Joker, i)));
-
-            all_choosable.extend(choosable.clone());
+        Some(&count) if with_joker && count.total() > 0 => {
+            let choosable = (0..count.required)
+                .map(|i| Pos(Var::Required(Card::Joker, i)))
+                .chain(
+                    (0..count.optional).map(|i| Pos(Var::Optional(Card::Joker, i))),
+                );
 
             encoder.add_constraint({
                 let mut same_cardinality_constraint = SameCardinality::new();
@@ -298,41 +300,65 @@ fn encode_config(
     }
 
     // Ensure that smaller cards are chosen first so that returned solutions are unique.
-    for c in &all_choosable {
-        match c.var() {
-            Var::Chosen(card, i) if *i > 0 => encoder.add_constraint(If {
-                cond: *c,
-                then: Pos(Var::Chosen(*card, i - 1)),
-            }),
-            _ => {}
+    for (&card, amount) in config.cards.iter() {
+        if amount.required > 0 {
+            for i in 1..amount.required {
+                encoder.add_constraint(If {
+                    cond: Pos(Var::Required(card, i)),
+                    then: Pos(Var::Required(card, i - 1)),
+                });
+            }
+        }
+
+        if amount.optional > 0 {
+            for i in 1..amount.optional {
+                encoder.add_constraint(If {
+                    cond: Pos(Var::Optional(card, i)),
+                    then: Pos(Var::Optional(card, i - 1)),
+                });
+            }
         }
     }
 
-    encoder.add_constraint(AtleastK {
-        k: atleast,
-        lits: all_choosable.into_iter(),
+    // Ensure that all required cards are used.
+    for (&card, amount) in config
+        .cards
+        .iter()
+        .filter(|(_, amount)| amount.required > 0)
+        .map(|(c, amount)| (c, amount.required))
+    {
+        for i in 0..amount {
+            encoder.add_constraint(Pos(Var::Required(card, i)));
+        }
+    }
+
+    // Ensure that the minimum number of optional cards are used
+    let lits = config.cards.iter().flat_map(|(&c, amount)| {
+        (0..amount.optional).map(move |i| Pos(Var::Optional(c, i)))
     });
+    encoder.add_constraint(AtleastK { k: atleast, lits });
 }
 
-#[derive(Debug)]
-pub struct Config {
-    cards: HashMap<Card, u32>,
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
+struct Amount {
+    required: u32,
+    optional: u32,
 }
 
-impl Config {
+impl Amount {
     fn total(&self) -> u32 {
-        self.cards.values().sum()
+        self.required + self.optional
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        let config = iproduct!(1..=13, Color::iter())
-            .map(|(number, color)| Card::Normal { color, number })
-            .chain(once(Card::Joker))
-            .zip(repeat(0))
-            .collect();
-        Self { cards: config }
+#[derive(Debug, Default)]
+pub struct Config {
+    cards: HashMap<Card, Amount>,
+}
+
+impl Config {
+    fn total_optional_cards(&self) -> u32 {
+        self.cards.values().map(|amount| amount.optional).sum()
     }
 }
 
@@ -343,7 +369,7 @@ fn pretty_print_config(config: &Config) {
             .iter()
             .filter_map(|(card, count)| match card {
                 Card::Normal { color: c, number } if color == *c => {
-                    Some(vec![number; *count as usize])
+                    Some(vec![number; count.total() as usize])
                 }
                 _ => None,
             })
@@ -357,7 +383,7 @@ fn pretty_print_config(config: &Config) {
     }
 
     if let Some(joker_count) = config.cards.get(&Card::Joker) {
-        println!("{}", "X".repeat(*joker_count as usize));
+        println!("{}", "X".repeat(joker_count.total() as usize));
     }
 }
 
@@ -435,49 +461,51 @@ fn pretty_print_solution(model: &Model<Var>) {
     }
 }
 
-fn count_cards_in_solution(model: &Model<Var>) -> usize {
+fn count_optional_cards_in_solution(model: &Model<Var>) -> usize {
     model
         .vars()
-        .filter(|v| matches!(v, Pos(Var::Chosen(..))))
+        .filter(|v| matches!(v, Pos(Var::Optional(..))))
         .count()
 }
 
 fn try_solve(
     config: &Config,
-    atleast: u32,
+    atleast: u32, // How many optional cards should be used.
     with_joker: bool,
 ) -> Option<(Model<Var>, DefaultEncoder<Var>)> {
+
     let mut encoder = DefaultEncoder::new();
 
     encode_general_rules(&mut encoder);
+
     encode_config(&mut encoder, config, atleast, with_joker);
 
     let model = encoder.solve();
-    model.map(|m| (m, encoder))
+    model.map(|model| (model, encoder))
 }
 
 fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
-    let total = config.total();
 
     let mut min_encoded = 0;
     let mut min = 0;
-    let mut max = total + 1;
+    let mut max = config.total_optional_cards() + 1;
 
     let mut best_model = None;
     let mut best = 0;
 
     loop {
+        println!("min = {}, max = {}", min, max);
         let val = (min + max) / 2;
 
-        if val == min || val == max {
+        if val == min {
             break;
         }
 
-        //println!("Try atleast {}", val);
+        println!("Try atleast {}", val);
         if let Some(model) = try_solve(&config, val, with_joker) {
-            let cards = count_cards_in_solution(&model.0) as u32;
+            let cards = count_optional_cards_in_solution(&model.0) as u32;
 
-            //println!("Possible solution! ({})", cards);
+            println!("Possible solution! ({})", cards);
 
             min_encoded = val;
             min = cards;
@@ -486,7 +514,7 @@ fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
                 best_model = Some(model);
             }
         } else {
-            //println!("Impossible!");
+            println!("Impossible!");
             max = val;
         }
     }
@@ -496,12 +524,14 @@ fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
     if let Some((mut model, mut encoder)) = best_model {
         models.push(model.clone());
 
+        //encoder.solver.write_dimacs(&PathBuf::from("clauses.dimacs")).unwrap();
+
         // Required so that the search for alternative solutions has the same number
         // of cards.
         if min_encoded < min {
             let lits = model
                 .vars()
-                .filter(|v| matches!(v.var(), Var::Chosen(..)))
+                .filter(|v| matches!(v.var(), Var::Optional(..)))
                 .map(|v| Pos(*v.var()));
             encoder.add_constraint(AtleastK {
                 k: min,
@@ -512,7 +542,7 @@ fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
         loop {
             encoder.add_constraint(Or(model
                 .vars()
-                .filter(|v| matches!(v.var(), Var::Chosen(..)))
+                .filter(|v| matches!(v.var(), Var::Optional(..)))
                 .map(|v| !v)));
             if let Some(new_model) = encoder.solve() {
                 models.push(new_model.clone());
@@ -551,7 +581,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     match config.cards.get(&Card::Joker) {
-        Some(&count) if count > 0  => {
+        Some(&count) if count.total() > 0  => {
 
             let models = collect_solutions(&config, false);
             if !models.is_empty() {
