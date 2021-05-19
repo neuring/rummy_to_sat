@@ -1,15 +1,17 @@
 mod parser;
 
-use std::{
-    collections::HashMap,
-    path::PathBuf,
-};
+use std::{collections::HashMap, iter, path::PathBuf};
 
 use anyhow::Context;
+use colored::Colorize;
 use itertools::{iproduct, Itertools};
-use sat_encoder::{Encoder, Model, Solver, constraints::{
+use sat_encoder::{
+    constraints::{
         And, AtMostK, AtleastK, ExactlyK, Expr, If, Not, Or, SameCardinality,
-    }, prelude::*};
+    },
+    prelude::*,
+    Encoder, Model, Solver,
+};
 use structopt::StructOpt;
 use strum::IntoEnumIterator;
 
@@ -24,14 +26,37 @@ enum Color {
 }
 
 impl Color {
-    const END_COLOR: &'static str = "\u{1b}[0m";
-
-    fn ascii_color_code(&self) -> &'static str {
+    fn to_color(&self) -> colored::Color {
         match self {
-            Color::Red => "\u{1b}[31m",
-            Color::Green => "\u{1b}[32m",
-            Color::Yellow => "\u{1b}[33m",
-            Color::Blue => "\u{1b}[34m",
+            Color::Red => colored::Color::Red,
+            Color::Green => colored::Color::Green,
+            Color::Yellow => colored::Color::Yellow,
+            Color::Blue => colored::Color::Blue,
+        }
+    }
+
+    fn to_bright_color(&self) -> colored::Color {
+        match self {
+            Color::Red => colored::Color::TrueColor {
+                r: 255,
+                g: 150,
+                b: 150,
+            },
+            Color::Green => colored::Color::TrueColor {
+                r: 150,
+                g: 255,
+                b: 150,
+            },
+            Color::Yellow => colored::Color::TrueColor {
+                r: 255,
+                g: 255,
+                b: 150,
+            },
+            Color::Blue => colored::Color::TrueColor {
+                r: 150,
+                g: 150,
+                b: 255,
+            },
         }
     }
 }
@@ -369,7 +394,13 @@ fn pretty_print_config(config: &Config) {
             .iter()
             .filter_map(|(card, count)| match card {
                 Card::Normal { color: c, number } if color == *c => {
-                    Some(vec![number; count.total() as usize])
+                    let required = vec![(number, true); count.required as usize];
+                    let optional = vec![(number, false); count.optional as usize];
+
+                    let mut cards = required;
+                    cards.extend(optional);
+
+                    Some(cards)
                 }
                 _ => None,
             })
@@ -377,17 +408,54 @@ fn pretty_print_config(config: &Config) {
             .collect::<Vec<_>>();
         nums.sort();
 
-        let s = nums.into_iter().map(|i| i.to_string()).join(" ");
+        let s = nums
+            .into_iter()
+            .map(|(i, required)| {
+                let s = i.to_string();
 
-        println!("{}{}{}", color.ascii_color_code(), s, Color::END_COLOR);
+                let s = if !required {
+                    s.color(color.to_bright_color()).bold()
+                } else {
+                    s.color(color.to_color())
+                };
+
+                format!("{}", s)
+            })
+            .join(" ");
+
+        if !s.is_empty() {
+            println!("{}", s);
+        }
     }
 
     if let Some(joker_count) = config.cards.get(&Card::Joker) {
-        println!("{}", "X".repeat(joker_count.total() as usize));
+        let s = iter::repeat("X".white().bold())
+            .take(joker_count.optional as usize)
+            .chain(iter::repeat("X".into()).take(joker_count.required as usize))
+            .join(" ");
+
+        println!("{}", s);
     }
 }
 
 fn pretty_print_solution(model: &Model<Var>) {
+    let mut required_cards = HashMap::<_, u32>::new();
+    for v in model.vars() {
+        if let Var::Required(c, _) = v.var() {
+            *required_cards.entry(*c).or_default() += 1;
+        }
+    }
+
+    let mut required_cards_left = |card: Card| {
+        if let Some(i) = required_cards.get_mut(&card) {
+            if *i > 0 {
+                *i -= 1;
+                return true
+            }
+        }
+        false
+    };
+
     let mut num_blocks = Vec::new();
 
     for color in Color::iter() {
@@ -416,12 +484,21 @@ fn pretty_print_solution(model: &Model<Var>) {
             .into_iter()
             .map(|(idx, joker)| {
                 if joker {
-                    return "X".into();
+                    return if required_cards_left(Card::Joker) {
+                        "X".color(color.to_color())
+                    } else {
+                        "X".bold().color(color.to_bright_color())
+                    };
                 }
-                idx.to_string()
+
+                if required_cards_left(Card::Normal { color, number: idx}) {
+                    return idx.to_string().color(color.to_color());
+                }
+
+                idx.to_string().color(color.to_bright_color()).bold()
             })
             .join(" ");
-        println!("{}{}{}", color.ascii_color_code(), s, Color::END_COLOR);
+        println!("{}", s);
     }
 
     let mut color_blocks = Vec::new();
@@ -452,9 +529,18 @@ fn pretty_print_solution(model: &Model<Var>) {
             .into_iter()
             .map(|(color, joker)| {
                 if joker {
-                    return "X".into();
+                    return if required_cards_left(Card::Joker) {
+                        "X".color(color.to_color())
+                    } else {
+                        "X".bold().color(color.to_bright_color())
+                    };
                 }
-                format!("{}{}{}", color.ascii_color_code(), num, Color::END_COLOR)
+
+                if required_cards_left(Card::Normal { color, number: num }) {
+                    return num.to_string().color(color.to_color());
+                }
+
+                num.to_string().color(color.to_bright_color()).bold()
             })
             .join(" ");
         println!("{}", s);
@@ -473,7 +559,6 @@ fn try_solve(
     atleast: u32, // How many optional cards should be used.
     with_joker: bool,
 ) -> Option<(Model<Var>, DefaultEncoder<Var>)> {
-
     let mut encoder = DefaultEncoder::new();
 
     encode_general_rules(&mut encoder);
@@ -485,7 +570,6 @@ fn try_solve(
 }
 
 fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
-
     let mut min_encoded = 0;
     let mut min = 0;
     let mut max = config.total_optional_cards() + 1;
@@ -494,28 +578,27 @@ fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
     let mut best = 0;
 
     loop {
-        println!("min = {}, max = {}", min, max);
         let val = (min + max) / 2;
 
-        if val == min {
-            break;
-        }
-
-        println!("Try atleast {}", val);
+        //println!("Try atleast {}", val);
         if let Some(model) = try_solve(&config, val, with_joker) {
             let cards = count_optional_cards_in_solution(&model.0) as u32;
 
-            println!("Possible solution! ({})", cards);
+            //println!("Possible solution! ({})", cards);
 
             min_encoded = val;
             min = cards;
-            if val > best {
+            if val >= best {
                 best = cards;
                 best_model = Some(model);
             }
         } else {
-            println!("Impossible!");
+            //println!("Impossible!");
             max = val;
+        }
+
+        if val == min {
+            break;
         }
     }
 
@@ -523,8 +606,6 @@ fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
 
     if let Some((mut model, mut encoder)) = best_model {
         models.push(model.clone());
-
-        //encoder.solver.write_dimacs(&PathBuf::from("clauses.dimacs")).unwrap();
 
         // Required so that the search for alternative solutions has the same number
         // of cards.
