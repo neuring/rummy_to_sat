@@ -5,13 +5,9 @@ use std::{collections::HashMap, iter, path::PathBuf};
 use anyhow::Context;
 use colored::Colorize;
 use itertools::{Either, Itertools, iproduct};
-use sat_encoder::{
-    constraints::{
-        And, AtMostK, AtleastK, ExactlyK, Expr, If, Not, Or, SameCardinality,
-    },
-    prelude::*,
-    Encoder, Model, Solver,
-};
+use sat_encoder::{CadicalEncoder, Encoder, Lit, Model, Solver, constraints::{
+        And, AtMostK, AtLeastK, ExactlyK, Expr, If, Not, Or, SameCardinality,
+    }};
 use structopt::StructOpt;
 use strum::IntoEnumIterator;
 
@@ -120,12 +116,12 @@ fn encode_number_block_rules(
     // The same space cannot be occupied by its number card *and* joker
     for index in 1..=13 {
         let lits = [true, false].iter().map(|&joker| {
-            Pos(Var::Num(NumberBlock {
+            Var::Num(NumberBlock {
                 color,
                 instance,
                 is_joker: joker,
                 index,
-            }))
+            })
         });
 
         encoder.add_constraint(Not(And(lits.clone())));
@@ -191,12 +187,12 @@ fn encode_color_block_rules(
 
     for color in Color::iter() {
         let lits = [false, true].iter().map(|&joker| {
-            Pos(Var::Color(ColorBlock {
+            Var::Color(ColorBlock {
                 number,
                 instance,
                 is_joker: joker,
                 color,
-            }))
+            })
         });
 
         encoder.add_constraint(Not(And(lits.clone())));
@@ -210,7 +206,7 @@ fn encode_color_block_rules(
         k: 0,
         lits: reprs.clone().into_iter(),
     };
-    let filled_cond = AtleastK {
+    let filled_cond = AtLeastK {
         k: 3,
         lits: reprs.clone().into_iter(),
     };
@@ -238,28 +234,28 @@ fn encode_config(
     for (color, number) in iproduct!(Color::iter(), 1..=13) {
         let lits = (0..=1)
             .map(|instance| {
-                Pos(Var::Color(ColorBlock {
+                Var::Color(ColorBlock {
                     number,
                     instance,
                     is_joker: false,
                     color,
-                }))
+                })
             })
             .chain((0..=1).map(|instance| {
-                Pos(Var::Num(NumberBlock {
+                Var::Num(NumberBlock {
                     color,
                     instance,
                     is_joker: false,
                     index: number,
-                }))
+                })
             }));
 
         match config.cards.get(&Card::Normal { color, number }) {
             Some(&count) if count.total() > 0 => {
                 let choosable = (0..count.required)
-                    .map(|i| Pos(Var::Required(Card::Normal { color, number }, i)))
+                    .map(|i| Var::Required(Card::Normal { color, number }, i))
                     .chain((0..count.optional).map(|i| {
-                        Pos(Var::Optional(Card::Normal { color, number }, i))
+                        Var::Optional(Card::Normal { color, number }, i)
                     }));
 
                 encoder.add_constraint({
@@ -280,31 +276,31 @@ fn encode_config(
 
     let joker_lits = iproduct!(Color::iter(), 1..=13, 0..=1)
         .map(|(color, number, instance)| {
-            Pos(Var::Color(ColorBlock {
+            Var::Color(ColorBlock {
                 number,
                 instance,
                 is_joker: true,
                 color,
-            }))
+            })
         })
         .chain(iproduct!(Color::iter(), 1..=13, 0..=1).map(
             |(color, index, instance)| {
-                Pos(Var::Num(NumberBlock {
+                Var::Num(NumberBlock {
                     index,
                     instance,
                     is_joker: true,
                     color,
-                }))
+                })
             },
         ));
 
     match config.cards.get(&Card::Joker) {
         Some(&count) if count.required > 0 => {
             let choosable_required =
-                (0..count.required).map(|i| Pos(Var::Required(Card::Joker, i)));
+                (0..count.required).map(|i| Var::Required(Card::Joker, i));
 
             let choosable_optional =
-                (0..count.optional).map(|i| Pos(Var::Optional(Card::Joker, i)));
+                (0..count.optional).map(|i| Var::Optional(Card::Joker, i));
 
             let choosable = if with_joker && count.optional > 0 {
                 Either::Left(choosable_required.chain(choosable_optional))
@@ -335,8 +331,8 @@ fn encode_config(
         if amount.required > 0 {
             for i in 1..amount.required {
                 encoder.add_constraint(If {
-                    cond: Pos(Var::Required(card, i)),
-                    then: Pos(Var::Required(card, i - 1)),
+                    cond: Var::Required(card, i),
+                    then: Var::Required(card, i - 1),
                 });
             }
         }
@@ -344,8 +340,8 @@ fn encode_config(
         if amount.optional > 0 {
             for i in 1..amount.optional {
                 encoder.add_constraint(If {
-                    cond: Pos(Var::Optional(card, i)),
-                    then: Pos(Var::Optional(card, i - 1)),
+                    cond: Var::Optional(card, i),
+                    then: Var::Optional(card, i - 1),
                 });
             }
         }
@@ -359,15 +355,15 @@ fn encode_config(
         .map(|(c, amount)| (c, amount.required))
     {
         for i in 0..amount {
-            encoder.add_constraint(Pos(Var::Required(card, i)));
+            encoder.add_constraint(Var::Required(card, i));
         }
     }
 
     // Ensure that the minimum number of optional cards are used
     let lits = config.cards.iter().flat_map(|(&c, amount)| {
-        (0..amount.optional).map(move |i| Pos(Var::Optional(c, i)))
+        (0..amount.optional).map(move |i| Var::Optional(c, i))
     });
-    encoder.add_constraint(AtleastK { k: atleast, lits });
+    encoder.add_constraint(AtLeastK { k: atleast, lits });
 }
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
@@ -556,7 +552,7 @@ fn pretty_print_solution(model: &Model<Var>) {
 fn count_optional_cards_in_solution(model: &Model<Var>) -> usize {
     model
         .vars()
-        .filter(|v| matches!(v, Pos(Var::Optional(..))))
+        .filter(|v| matches!(v, Lit::Pos(Var::Optional(..))))
         .count()
 }
 
@@ -564,8 +560,8 @@ fn try_solve(
     config: &Config,
     atleast: u32, // How many optional cards should be used.
     with_joker: bool,
-) -> Option<(Model<Var>, DefaultEncoder<Var>)> {
-    let mut encoder = DefaultEncoder::new();
+) -> Option<(Model<Var>, CadicalEncoder<Var>)> {
+    let mut encoder = CadicalEncoder::new();
 
     encode_general_rules(&mut encoder);
 
@@ -619,8 +615,8 @@ fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
             let lits = model
                 .vars()
                 .filter(|v| matches!(v.var(), Var::Optional(..)))
-                .map(|v| Pos(*v.var()));
-            encoder.add_constraint(AtleastK {
+                .map(|v| *v.var());
+            encoder.add_constraint(AtLeastK {
                 k: min,
                 lits: lits.into_iter(),
             });
