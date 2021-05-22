@@ -1,0 +1,13 @@
+REQUIRED:
+red 1
+red 2
+red 3
+
+
+OPTIONAL:
+yellow 4
+red 4
+blue 4
+
+yellow 5
+yellow 6

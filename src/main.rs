@@ -582,6 +582,10 @@ fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
     loop {
         let val = (min + max) / 2;
 
+        if val == min {
+            break;
+        }
+
         //println!("Try atleast {}", val);
         if let Some(model) = try_solve(&config, val, with_joker) {
             let cards = count_optional_cards_in_solution(&model.0) as u32;
@@ -597,10 +601,6 @@ fn collect_solutions(config: &Config, with_joker: bool) -> Vec<Model<Var>> {
         } else {
             //println!("Impossible!");
             max = val;
-        }
-
-        if val == min {
-            break;
         }
     }
 
