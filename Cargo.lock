@@ -291,7 +291,7 @@ dependencies = [
  "itertools",
  "nom",
  "nom-supreme",
- "sat_encoder",
+ "satoxid",
  "structopt",
  "strum",
 ]
@@ -303,8 +303,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71d301d4193d031abdd79ff7e3dd721168a9572ef3fe51a1517aba235bd8f86e"
 
 [[package]]
-name = "sat_encoder"
+name = "satoxid"
 version = "0.1.0"
+source = "git+https://github.com/neuring/satoxid?branch=main#f6a3a587ac8a0461d305713a81eea6e4e160f3ad"
 dependencies = [
  "cadical",
 ]

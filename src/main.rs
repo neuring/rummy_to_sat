@@ -5,7 +5,7 @@ use std::{collections::HashMap, iter, path::PathBuf};
 use anyhow::Context;
 use colored::Colorize;
 use itertools::{Either, Itertools, iproduct};
-use sat_encoder::{CadicalEncoder, Encoder, Lit, Model, Solver, constraints::{
+use satoxid::{CadicalEncoder, Encoder, Lit, Model, Solver, constraints::{
         And, AtMostK, AtLeastK, ExactlyK, Expr, If, Not, Or, SameCardinality,
     }};
 use structopt::StructOpt;
